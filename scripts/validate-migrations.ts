@@ -1007,6 +1007,10 @@ const latestUpgradeFixtures: Record<string, UpgradeFixture> = {
     seed: seedPre0020Database,
     verify: verify0020Migration,
   },
+  "0021_furry_mindworm": {
+    seed: seedPre0021Database,
+    verify: verify0021Migration,
+  },
 };
 
 function seedPre0020Database(db: any) {
@@ -1066,6 +1070,61 @@ function verify0020Migration(db: any) {
   db.run("UPDATE organizations SET source_id = 'src-b20' WHERE name = 'acme'");
   const repinned = db.query("SELECT source_id FROM organizations WHERE name = 'acme'").get() as { source_id: string | null } | null;
   assert(repinned?.source_id === "src-b20", `Expected a manual pin to round-trip, got ${JSON.stringify(repinned)}`);
+}
+
+function seedPre0021Database(db: any) {
+  // Migrations 0000-0020 have run: no storage analytics tables exist yet.
+  // Seed one user with a gitea config and one tracked repository so the
+  // additive tables can be exercised against real foreign keys.
+  db.run("INSERT INTO users (id, email, username, name) VALUES ('u-st21', 'st21@example.com', 'st21', 'Storage Twenty-One')");
+  db.run(
+    "INSERT INTO configs (id, user_id, name, is_active, github_config, gitea_config, schedule_config, cleanup_config) " +
+      "VALUES ('cfg-st21', 'u-st21', 'Default', 1, '{\"provider\":\"github\",\"owner\":\"octocat\",\"token\":\"gh-token\",\"type\":\"personal\"}', '{\"provider\":\"gitea\",\"url\":\"https://gitea.example.com\",\"username\":\"mirror\",\"token\":\"gitea-token\"}', '{}', '{}')",
+  );
+  db.run(
+    "INSERT INTO repositories (id, user_id, config_id, name, full_name, normalized_full_name, url, clone_url, owner, default_branch) " +
+      "VALUES ('repo-st21', 'u-st21', 'cfg-st21', 'app', 'mirror/app', 'mirror/app', 'https://gitea.example.com/mirror/app', 'https://gitea.example.com/mirror/app.git', 'mirror', 'main')",
+  );
+}
+
+function verify0021Migration(db: any) {
+  for (const table of ["storage_states", "storage_release_assets", "storage_snapshots"]) {
+    const created = db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { name: string } | null;
+    assert(created, `Expected table ${table} to exist after migration`);
+  }
+  const stateIndex = db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'uniq_storage_states_repository'").get() as { name: string } | null;
+  assert(stateIndex, "Expected the unique storage_states.repository_id index to exist");
+  const assetIndex = db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'uniq_storage_assets_repo_release_asset'").get() as { name: string } | null;
+  assert(assetIndex, "Expected the unique asset identity index to exist");
+
+  db.run(
+    "INSERT INTO storage_states (id, user_id, repository_id, config_id, repository_size_bytes, release_size_bytes, total_size_bytes, collection_status) " +
+      "VALUES ('ss-21', 'u-st21', 'repo-st21', 'cfg-st21', 102400, 2048, 104448, 'complete')",
+  );
+  db.run(
+    "INSERT INTO storage_release_assets (id, user_id, repository_id, release_id, release_tag, asset_id, file_name, size_bytes, download_count) " +
+      "VALUES ('sa-21', 'u-st21', 'repo-st21', 7, 'v1.0.0', 99, 'app.zip', 2048, 3)",
+  );
+  db.run(
+    "INSERT INTO storage_snapshots (id, user_id, repository_id, config_id, captured_at, total_size_bytes, collection_status) " +
+      "VALUES ('sn-21', 'u-st21', 'repo-st21', 'cfg-st21', 1760000000, 104448, 'complete')",
+  );
+  const state = db.query("SELECT total_size_bytes, last_scanned_at FROM storage_states WHERE id = 'ss-21'").get() as { total_size_bytes: number; last_scanned_at: number } | null;
+  assert(state?.total_size_bytes === 104448, `Expected the state insert to round-trip, got ${JSON.stringify(state)}`);
+  assert(typeof state?.last_scanned_at === "number" && state.last_scanned_at > 0, "Expected last_scanned_at to receive the column default");
+
+  let rejected = false;
+  try {
+    db.run(
+      "INSERT INTO storage_states (id, user_id, repository_id, config_id) VALUES ('ss-21-dup', 'u-st21', 'repo-st21', 'cfg-st21')",
+    );
+  } catch {
+    rejected = true;
+  }
+  assert(rejected, "Expected a second storage state for the same repository to be rejected");
+
+  const repoStill = db.query("SELECT id FROM repositories WHERE id = 'repo-st21'").get() as { id: string } | null;
+  assert(repoStill, "Expected existing repositories to be untouched by the migration");
 }
 
 function lintMigrations(selectedMigrations: Migration[]) {

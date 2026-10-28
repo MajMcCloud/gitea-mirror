@@ -3,6 +3,7 @@ import { initializeRecovery, hasJobsNeedingRecovery, getRecoveryStatus } from '.
 import { startCleanupService, stopCleanupService } from './lib/cleanup-service';
 import { startSchedulerService, stopSchedulerService } from './lib/scheduler-service';
 import { startRepositoryCleanupService, stopRepositoryCleanupService } from './lib/repository-cleanup-service';
+import { startStorageScanService, stopStorageScanService } from './lib/storage-service';
 import { initializeShutdownManager, registerShutdownCallback } from './lib/shutdown-manager';
 import { setupSignalHandlers } from './lib/signal-handlers';
 import { auth } from './lib/auth';
@@ -35,6 +36,7 @@ let recoveryInFlight = false;
 let cleanupServiceStarted = false;
 let schedulerServiceStarted = false;
 let repositoryCleanupServiceStarted = false;
+let storageScanServiceStarted = false;
 let shutdownManagerInitialized = false;
 let envConfigInitialized = false;
 let envConfigCheckCount = 0; // Track attempts to avoid excessive checking
@@ -270,6 +272,25 @@ export const onRequest = defineMiddleware(async (context, next) => {
     } catch (error) {
       console.error('Failed to start repository cleanup service:', error);
       // Don't fail the request if repository cleanup service fails to start
+    }
+  }
+
+  // Start the storage analytics scan service only once after recovery is complete
+  if (recoveryInitialized && !storageScanServiceStarted) {
+    try {
+      console.log('Starting storage analytics scan service...');
+      startStorageScanService();
+
+      // Register storage analytics scan service shutdown callback
+      registerShutdownCallback(async () => {
+        console.log('🛑 Shutting down storage analytics scan service...');
+        stopStorageScanService();
+      });
+
+      storageScanServiceStarted = true;
+    } catch (error) {
+      console.error('Failed to start storage analytics scan service:', error);
+      // Don't fail the request if the storage scan service fails to start
     }
   }
 

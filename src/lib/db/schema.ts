@@ -760,6 +760,133 @@ export const organizations = sqliteTable("organizations", {
   uniqueIndex("uniq_organizations_user_normalized_name").on(table.userId, table.normalizedName),
 ]);
 
+// ===== Storage Analytics Tables =====
+//
+// Storage analytics measures what the Gitea REST API reports (repository
+// "size" in KiB plus release attachment sizes in bytes). It is an estimate
+// of tracked storage, never a physical disk census. See docs note in
+// src/lib/storage-analytics.ts.
+
+// How complete a measurement is. Only "complete" rows may feed aggregates
+// and snapshots; "partial"/"error" rows keep the last good numbers and
+// carry the failure reason so the UI can show stale data honestly.
+export const storageCollectionStatus = ["complete", "partial", "error"] as const;
+export type StorageCollectionStatus = (typeof storageCollectionStatus)[number];
+
+// Current (last successfully captured) storage numbers per repository.
+// One row per tracked repository; re-scans update in place. History lives
+// in storage_snapshots so a re-scan never rewrites past measurements.
+export const storageStates = sqliteTable("storage_states", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id),
+  repositoryId: text("repository_id")
+    .notNull()
+    .references(() => repositories.id, { onDelete: "cascade" }),
+  // Instance grouping: the config row whose Gitea destination was scanned.
+  configId: text("config_id").notNull(),
+
+  // Bytes. RepositorySizeBytes is the Gitea "size" field converted from
+  // KiB (it covers Git and the LFS data Gitea counts in it).
+  repositorySizeBytes: integer("repository_size_bytes").notNull().default(0),
+  releaseSizeBytes: integer("release_size_bytes").notNull().default(0),
+  totalSizeBytes: integer("total_size_bytes").notNull().default(0),
+
+  releaseCount: integer("release_count").notNull().default(0),
+  assetCount: integer("asset_count").notNull().default(0),
+  totalDownloadCount: integer("total_download_count").notNull().default(0),
+  largestAssetSizeBytes: integer("largest_asset_size_bytes").notNull().default(0),
+
+  collectionStatus: text("collection_status")
+    .$type<StorageCollectionStatus>()
+    .notNull()
+    .default("complete"),
+  lastError: text("last_error"),
+  lastScannedAt: integer("last_scanned_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+
+  createdAt: integer("created_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+  updatedAt: integer("updated_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+}, (table) => [
+  uniqueIndex("uniq_storage_states_repository").on(table.repositoryId),
+  index("idx_storage_states_user_id").on(table.userId),
+  index("idx_storage_states_config_id").on(table.userId, table.configId),
+]);
+
+// Current release assets as of the last complete scan of a repository.
+// A re-scan replaces the rows for that repository, so deleted assets
+// disappear from the "current" view while snapshots keep the history.
+// Gitea ids are unique only per instance, and repositoryId already pins
+// the instance, hence the (repository, release, asset) unique key.
+export const storageReleaseAssets = sqliteTable("storage_release_assets", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id),
+  repositoryId: text("repository_id")
+    .notNull()
+    .references(() => repositories.id, { onDelete: "cascade" }),
+
+  releaseId: integer("release_id").notNull(),
+  releaseTag: text("release_tag").notNull().default(""),
+  releaseName: text("release_name"),
+  releaseDraft: integer("release_draft", { mode: "boolean" }).notNull().default(false),
+  releasePrerelease: integer("release_prerelease", { mode: "boolean" }).notNull().default(false),
+  releasePublishedAt: integer("release_published_at", { mode: "timestamp" }),
+  releaseHtmlUrl: text("release_html_url"),
+
+  assetId: integer("asset_id").notNull(),
+  assetUuid: text("asset_uuid"),
+  fileName: text("file_name").notNull(),
+  sizeBytes: integer("size_bytes").notNull().default(0),
+  downloadCount: integer("download_count").notNull().default(0),
+  downloadUrl: text("download_url"),
+  assetCreatedAt: integer("asset_created_at", { mode: "timestamp" }),
+
+  lastScannedAt: integer("last_scanned_at", { mode: "timestamp" })
+    .notNull()
+    .default(sql`(unixepoch())`),
+}, (table) => [
+  uniqueIndex("uniq_storage_assets_repo_release_asset").on(table.repositoryId, table.releaseId, table.assetId),
+  index("idx_storage_assets_user_id").on(table.userId),
+  index("idx_storage_assets_repository").on(table.repositoryId),
+  index("idx_storage_assets_size").on(table.userId, table.sizeBytes),
+]);
+
+// Append-only measurement history. Never update these rows: growth
+// calculations rely on the captured numbers staying untouched.
+export const storageSnapshots = sqliteTable("storage_snapshots", {
+  id: text("id").primaryKey(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id),
+  repositoryId: text("repository_id")
+    .notNull()
+    .references(() => repositories.id, { onDelete: "cascade" }),
+  configId: text("config_id").notNull(),
+
+  capturedAt: integer("captured_at", { mode: "timestamp" }).notNull(),
+  repositorySizeBytes: integer("repository_size_bytes").notNull().default(0),
+  releaseSizeBytes: integer("release_size_bytes").notNull().default(0),
+  totalSizeBytes: integer("total_size_bytes").notNull().default(0),
+  releaseCount: integer("release_count").notNull().default(0),
+  assetCount: integer("asset_count").notNull().default(0),
+  totalDownloadCount: integer("total_download_count").notNull().default(0),
+  collectionStatus: text("collection_status")
+    .$type<StorageCollectionStatus>()
+    .notNull()
+    .default("complete"),
+}, (table) => [
+  index("idx_storage_snapshots_user_captured").on(table.userId, table.capturedAt),
+  index("idx_storage_snapshots_repo_captured").on(table.repositoryId, table.capturedAt),
+]);
+
 // ===== Better Auth Tables =====
 
 // Sessions table

@@ -4,6 +4,7 @@ export type Paths =
   | "/"
   | "/repositories"
   | "/organizations"
+  | "/storage-analytics"
   | "/config"
   | "/activity";
 
